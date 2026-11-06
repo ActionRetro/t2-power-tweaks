@@ -1,0 +1,86 @@
+#!/bin/sh
+# t2-fast-wake - systemd-sleep hook for T2 MacBooks (EXPERIMENTAL)
+#
+# Install: sudo install -m 755 t2-fast-wake /usr/lib/systemd/system-sleep/
+# Remove:  sudo rm /usr/lib/systemd/system-sleep/t2-fast-wake
+#
+# In deep sleep the Mac cuts power to the Thunderbolt controllers, and on wake
+# the kernel waits ~6.5 s for each one to boot again. This hook removes the
+# Thunderbolt PCIe chains before suspend and rescans them after wake.
+#
+# Guard: the kernel's ACPI hotplug handler can deadlock if a Thunderbolt
+# hotplug event is being handled while a chain is removed or rescanned.
+# So the hook powers the controllers up first, waits for the handler to go
+# idle, and skips the removal (normal slow wake) if it doesn't go idle.
+
+NHI_IDS="0x1575 0x1577 0x15bf 0x15d2 0x15d9 0x15e8 0x15eb"
+SELF=/usr/lib/systemd/system-sleep/t2-fast-wake
+
+log() { echo "t2-fast-wake: $*" > /dev/kmsg 2>/dev/null || true; }
+
+# Print sysfs paths of Thunderbolt host controllers (NHIs)
+nhis() {
+    for d in /sys/bus/pci/devices/*; do
+        [ "$(cat "$d/vendor" 2>/dev/null)" = 0x8086 ] || continue
+        case " $NHI_IDS " in *" $(cat "$d/device" 2>/dev/null) "*) echo "$d" ;; esac
+    done
+}
+
+# True while a kernel worker is running an ACPI hotplug event
+hotplug_busy() {
+    grep -qs '^kworker.*+kacpi_hotplug' /proc/[0-9]*/comm
+}
+
+# Wait up to $1 seconds for the hotplug handler to be idle for 1 s straight
+wait_idle() {
+    limit=$(( $1 * 5 )) n=0 quiet=0
+    while [ "$n" -lt "$limit" ]; do
+        if hotplug_busy; then quiet=0; else quiet=$((quiet + 1)); fi
+        [ "$quiet" -ge 5 ] && return 0
+        sleep 0.2
+        n=$((n + 1))
+    done
+    return 1
+}
+
+case "$1/$2" in
+pre/suspend)
+    list=$(nhis)
+    [ -n "$list" ] || exit 0
+
+    # 1. Power the controllers up so any firmware hotplug event fires now
+    for d in $list; do echo on > "$d/power/control"; done
+    sleep 2
+
+    # 2. Only remove once the ACPI hotplug handler is idle
+    if ! wait_idle 10; then
+        log "ACPI hotplug still busy - skipping removal (slow wake this time)"
+        exit 0
+    fi
+
+    # 3. Remove each chain at its top (the device right below the root port)
+    for d in $list; do
+        top=$(readlink -f "$d" | sed -E 's#^(/sys/devices/pci[0-9a-f:]+/[^/]+/[^/]+).*#\1#')
+        if [ -e "$top/remove" ]; then
+            echo 1 > "$top/remove" && log "removed $(basename "$top")"
+        fi
+    done
+    ;;
+
+post/suspend)
+    # Controllers that weren't removed go back to power saving
+    for d in $(nhis); do echo auto > "$d/power/control"; done
+    # Rescan outside systemd-sleep so it never delays the wake
+    systemd-run --quiet --no-block --on-active=3 "$SELF" rescan
+    ;;
+
+rescan/*)
+    [ -n "$(nhis)" ] && exit 0   # nothing was removed
+    if wait_idle 60; then
+        echo 1 > /sys/bus/pci/rescan && log "rescanned, Thunderbolt chains back"
+    else
+        log "ACPI hotplug busy for 60 s - not rescanning. Run: echo 1 | sudo tee /sys/bus/pci/rescan"
+    fi
+    ;;
+esac
+exit 0

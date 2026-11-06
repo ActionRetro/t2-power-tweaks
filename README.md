@@ -14,6 +14,15 @@ Each tweak asks before changing anything.
 | Turbo off on battery | udev rule sets `intel_pstate/no_turbo` on plug/unplug and at boot | Heavy tasks are slower on battery |
 | Video decode driver | Installs `intel-media-va-driver-non-free` | None |
 | ModemManager off | Disables the service (no modem in these Macs) | None |
+| Fast wake (**experimental**) | Installs the `t2-fast-wake` sleep hook | See below. Never installed by `--yes`. |
+
+### Fast wake (experimental)
+
+In deep sleep (S3) the Mac cuts power to the Thunderbolt controllers. On wake, the kernel waits about 6.5 s for each one to boot, one after another, so you get roughly 13–15 s of black screen. The [`t2-fast-wake`](t2-fast-wake) hook removes the Thunderbolt PCIe chains before suspend and rescans them a few seconds after wake. On a 2018 MacBook Pro 13", that cut the Linux side of resume to about 2 s.
+
+**Known risk:** removing the chains while the kernel is handling an ACPI hotplug event can deadlock (`acpiphp_hotplug_notify` → `free_bridge` → `acpi_lock_hp_context`). The machine then hangs before sleeping, with the screen off and the Touch Bar on. The hook guards against this. It powers the controllers up first, waits for the `kacpi_hotplug` worker to be idle, and skips the removal if the worker stays busy. That narrows the race but can't fully close it, so treat this as experimental. If a wake ever hangs, hold the power button, then run `sudo rm /usr/lib/systemd/system-sleep/t2-fast-wake`.
+
+The hook writes each step to the kernel log: `journalctl -k | grep t2-fast-wake`.
 
 ## Usage
 
@@ -46,7 +55,7 @@ On T2 kernels, Ubuntu's `turbostat` wrapper often says "turbostat not found for 
 
 - Tested on a 2018 MacBook Pro 13" (Touch Bar) on Ubuntu 26.04 with a `t2-resolute` kernel. Other T2 models should work. The script finds Thunderbolt controllers and the charger automatically rather than assuming device names.
 - These MacBook panels don't support Panel Self Refresh, so there's nothing to enable there.
-- Changes are limited to `/etc/modprobe.d/no-thunderbolt.conf`, `/etc/udev/rules.d/60-turbo-on-ac.rules`, and `/etc/udev/rules.d/61-thunderbolt-sleep.rules`. `--uninstall` removes them.
+- Changes are limited to `/etc/modprobe.d/no-thunderbolt.conf`, `/etc/udev/rules.d/60-turbo-on-ac.rules`, `/etc/udev/rules.d/61-thunderbolt-sleep.rules`, and (if chosen) `/usr/lib/systemd/system-sleep/t2-fast-wake`. `--uninstall` removes them.
 
 ## License
 

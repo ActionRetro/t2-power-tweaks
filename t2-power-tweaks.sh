@@ -9,6 +9,9 @@
 #   2. Turbo off on battery - disables turbo boost when unplugged, re-enables on AC.
 #   3. Video decode driver  - installs Intel's VA-API driver for GPU video decoding.
 #   4. ModemManager off     - T2 MacBooks have no cellular modem.
+#   5. Fast wake (EXPERIMENTAL) - sleep hook that removes the Thunderbolt chains
+#                             before suspend, cutting ~13 s off every wake.
+#                             Never installed by --yes; must be confirmed.
 #
 # Usage: sudo ./t2-power-tweaks.sh [--yes] [--dry-run] [--uninstall] [--status]
 
@@ -17,6 +20,8 @@ set -euo pipefail
 TURBO_RULE=/etc/udev/rules.d/60-turbo-on-ac.rules
 TB_RULE=/etc/udev/rules.d/61-thunderbolt-sleep.rules
 TB_BLACKLIST=/etc/modprobe.d/no-thunderbolt.conf
+WAKE_HOOK=/usr/lib/systemd/system-sleep/t2-fast-wake
+WAKE_HOOK_SRC="$(cd "$(dirname "$0")" && pwd)/t2-fast-wake"
 STATE_DIR=/var/lib/t2-power-tweaks
 MARKER="# Added by t2-power-tweaks"
 NO_TURBO=/sys/devices/system/cpu/intel_pstate/no_turbo
@@ -35,7 +40,7 @@ ok()    { printf '  \033[32m✔\033[0m %s\n' "$*"; }
 warn()  { printf '  \033[33m!\033[0m %s\n' "$*"; }
 
 usage() {
-    sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
     cat <<'EOF'
 
 Options:
@@ -137,7 +142,7 @@ show_status() {
 
     bold "Installed tweaks"
     local f
-    for f in "$TB_BLACKLIST" "$TB_RULE" "$TURBO_RULE"; do
+    for f in "$TB_BLACKLIST" "$TB_RULE" "$TURBO_RULE" "$WAKE_HOOK"; do
         [ -e "$f" ] && ok "$f" || info "- $f (not present)"
     done
     [ -e "$STATE_DIR/modemmanager-disabled" ] && ok "ModemManager disabled by this script"
@@ -264,12 +269,38 @@ tweak_modemmanager() {
     ok "Disabled."
 }
 
+tweak_fast_wake() {
+    bold "5. Fast wake from sleep (EXPERIMENTAL)"
+    if [ -z "$(find_nhi_devices)" ]; then
+        warn "No Intel Thunderbolt controllers found - skipping."
+        return
+    fi
+    if [ ! -r "$WAKE_HOOK_SRC" ]; then
+        warn "t2-fast-wake not found next to this script - skipping."
+        return
+    fi
+    info "In deep sleep the Mac cuts power to the Thunderbolt controllers, and on wake"
+    info "the kernel waits ~6.5 s for each one - roughly 13-15 s of black screen."
+    info "This sleep hook removes the Thunderbolt chains before suspend and rescans"
+    info "them a few seconds after wake."
+    warn "Experimental: removing PCI devices can hit a kernel deadlock in ACPI hotplug."
+    warn "The hook guards against it, but if a wake ever hangs, hold the power button,"
+    warn "then remove it with: sudo rm $WAKE_HOOK"
+    if [ "$ASSUME_YES" = 1 ]; then
+        info "Not installed with --yes. Run without --yes to choose it."
+        return
+    fi
+    ask "Install the experimental fast-wake hook?" || { info "Skipped."; return; }
+    run install -m 755 "$WAKE_HOOK_SRC" "$WAKE_HOOK"
+    ok "Installed. Takes effect on the next suspend."
+}
+
 # ---------- uninstall ----------
 
 uninstall() {
     bold "Removing t2-power-tweaks"
     local f
-    for f in "$TB_BLACKLIST" "$TB_RULE" "$TURBO_RULE"; do
+    for f in "$TB_BLACKLIST" "$TB_RULE" "$TURBO_RULE" "$WAKE_HOOK"; do
         if [ -e "$f" ]; then run rm -f "$f"; [ "$DRY_RUN" = 1 ] || ok "Removed $f"; fi
     done
     run udevadm control --reload
@@ -323,5 +354,6 @@ tweak_thunderbolt; echo
 tweak_turbo;       echo
 tweak_vaapi;       echo
 tweak_modemmanager; echo
+tweak_fast_wake;    echo
 bold "All done."
 info "Run '$0 --status' to check, and reboot once to confirm everything sticks."
