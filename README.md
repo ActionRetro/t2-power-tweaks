@@ -15,6 +15,9 @@ Each tweak asks before changing anything.
 | Video decode driver | Installs `intel-media-va-driver-non-free` | None |
 | ModemManager off | Disables the service (no modem in these Macs) | None |
 | Fast wake (**experimental**) | Installs the `t2-fast-wake` sleep hook | See below. Never installed by `--yes`. |
+| Keyboard backlight after wake | udev rule restarts UPower when the keyboard backlight device is re-created | The battery icon may blink briefly on wake |
+
+On wake, the T2 disconnects and reconnects the internal keyboard, and Linux creates a new keyboard backlight device. UPower, which GNOME uses for the backlight keys, keeps using the old device, so the keys stop working (`writing '…' to device failed` in the journal). The rule restarts UPower when a new backlight device appears.
 
 ### Fast wake (experimental)
 
@@ -55,7 +58,7 @@ On T2 kernels, Ubuntu's `turbostat` wrapper often says "turbostat not found for 
 
 - Tested on a 2018 MacBook Pro 13" (Touch Bar) on Ubuntu 26.04 with a `t2-resolute` kernel. Other T2 models should work. The script finds Thunderbolt controllers and the charger automatically rather than assuming device names.
 - These MacBook panels don't support Panel Self Refresh, so there's nothing to enable there.
-- Changes are limited to `/etc/modprobe.d/no-thunderbolt.conf`, `/etc/udev/rules.d/60-turbo-on-ac.rules`, `/etc/udev/rules.d/61-thunderbolt-sleep.rules`, and (if chosen) `/usr/lib/systemd/system-sleep/t2-fast-wake`. `--uninstall` removes them.
+- Changes are limited to `/etc/modprobe.d/no-thunderbolt.conf`, `/etc/udev/rules.d/60-turbo-on-ac.rules`, `/etc/udev/rules.d/61-thunderbolt-sleep.rules`, `/etc/udev/rules.d/62-kbd-backlight-upower.rules`, and (if chosen) `/usr/lib/systemd/system-sleep/t2-fast-wake`. `--uninstall` removes them.
 
 ## License
 

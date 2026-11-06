@@ -12,6 +12,8 @@
 #   5. Fast wake (EXPERIMENTAL) - sleep hook that removes the Thunderbolt chains
 #                             before suspend, cutting ~13 s off every wake.
 #                             Never installed by --yes; must be confirmed.
+#   6. Keyboard backlight after wake - restarts UPower when the T2 re-creates the
+#                             keyboard backlight on wake, so the keys keep working.
 #
 # Usage: sudo ./t2-power-tweaks.sh [--yes] [--dry-run] [--uninstall] [--status]
 
@@ -21,6 +23,7 @@ TURBO_RULE=/etc/udev/rules.d/60-turbo-on-ac.rules
 TB_RULE=/etc/udev/rules.d/61-thunderbolt-sleep.rules
 TB_BLACKLIST=/etc/modprobe.d/no-thunderbolt.conf
 WAKE_HOOK=/usr/lib/systemd/system-sleep/t2-fast-wake
+KBD_RULE=/etc/udev/rules.d/62-kbd-backlight-upower.rules
 WAKE_HOOK_SRC="$(cd "$(dirname "$0")" && pwd)/t2-fast-wake"
 STATE_DIR=/var/lib/t2-power-tweaks
 MARKER="# Added by t2-power-tweaks"
@@ -40,7 +43,7 @@ ok()    { printf '  \033[32m✔\033[0m %s\n' "$*"; }
 warn()  { printf '  \033[33m!\033[0m %s\n' "$*"; }
 
 usage() {
-    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
     cat <<'EOF'
 
 Options:
@@ -142,7 +145,7 @@ show_status() {
 
     bold "Installed tweaks"
     local f
-    for f in "$TB_BLACKLIST" "$TB_RULE" "$TURBO_RULE" "$WAKE_HOOK"; do
+    for f in "$TB_BLACKLIST" "$TB_RULE" "$TURBO_RULE" "$WAKE_HOOK" "$KBD_RULE"; do
         [ -e "$f" ] && ok "$f" || info "- $f (not present)"
     done
     [ -e "$STATE_DIR/modemmanager-disabled" ] && ok "ModemManager disabled by this script"
@@ -295,12 +298,33 @@ tweak_fast_wake() {
     ok "Installed. Takes effect on the next suspend."
 }
 
+tweak_kbd_backlight() {
+    bold "6. Keyboard backlight after wake"
+    if ! ls /sys/class/leds/ 2>/dev/null | grep -q 'kbd_backlight'; then
+        warn "No keyboard backlight found - skipping."
+        return
+    fi
+    if ! systemctl cat upower.service >/dev/null 2>&1; then
+        ok "UPower not installed - nothing to do."
+        return
+    fi
+    info "On wake the T2 reconnects the internal keyboard, which re-creates the"
+    info "backlight device. UPower keeps using the old one, so the backlight keys stop"
+    info "working until it restarts. This udev rule restarts UPower when that happens."
+    ask "Apply the keyboard backlight fix?" || { info "Skipped."; return; }
+
+    write_file "$KBD_RULE" "# T2 Macs re-create the keyboard backlight LED on wake; make UPower pick up the new one
+ACTION==\"add\", SUBSYSTEM==\"leds\", KERNEL==\"*kbd_backlight\", RUN+=\"/bin/systemctl --no-block try-restart upower.service\""
+    run udevadm control --reload
+    ok "Done. Takes effect on the next wake."
+}
+
 # ---------- uninstall ----------
 
 uninstall() {
     bold "Removing t2-power-tweaks"
     local f
-    for f in "$TB_BLACKLIST" "$TB_RULE" "$TURBO_RULE" "$WAKE_HOOK"; do
+    for f in "$TB_BLACKLIST" "$TB_RULE" "$TURBO_RULE" "$WAKE_HOOK" "$KBD_RULE"; do
         if [ -e "$f" ]; then run rm -f "$f"; [ "$DRY_RUN" = 1 ] || ok "Removed $f"; fi
     done
     run udevadm control --reload
@@ -355,5 +379,6 @@ tweak_turbo;       echo
 tweak_vaapi;       echo
 tweak_modemmanager; echo
 tweak_fast_wake;    echo
+tweak_kbd_backlight; echo
 bold "All done."
 info "Run '$0 --status' to check, and reboot once to confirm everything sticks."
